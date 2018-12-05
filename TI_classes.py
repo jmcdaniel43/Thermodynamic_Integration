@@ -283,18 +283,18 @@ class TI(object):
           #
           #*********************************************
           # turn off alchemical-alchemical (aa) and alchemical-nonalchemical interactions in original force class
-          for index in self.solute_total_atoms_list:
+          #for index in self.solute_total_atoms_list:
               # set CustomNonbonded interactions to zero
               # these are Aexch, Aelec, Aind, Adhf, B, C6 , C8 , C10 , C12
-              self.customNonbondedForce.setParticleParameters(index, [ 0.0 , 0.0 , 0.0 , 0.0 , 10.0 , 0.0 , 0.0 , 0.0 , 0.0 ] )
+              #self.customNonbondedForce.setParticleParameters(index, [ 0.0 , 0.0 , 0.0 , 0.0 , 10.0 , 0.0 , 0.0 , 0.0 , 0.0 ] )
 
-          # need to add exclusions/exceptions,
-          # even though charges are zero, have numerical problems in electrostatics when repulsion is scaled down
-          if interaction_type == "repulsion":
-              for i_index in self.alchemical_atomset:
-                  for j_index in self.nonalchemical_atomset:
+          # don't zero parameters as in commented above code, because we want to keep intra-molecular alchemical interactions within this force class ...
+          for i_index in self.alchemical_atomset:
+              for j_index in self.nonalchemical_atomset:
+                  self.customNonbondedForce.addExclusion(i_index,j_index)
+                  if interaction_type == "repulsion":
+                      # need to add exceptions for electrostatics, even though charges are zero, have numerical problems in electrostatics when repulsion is scaled down
                       self.nbondedForce.addException(i_index,j_index,0,1,0,True)
-                      self.customNonbondedForce.addExclusion(i_index,j_index)
 
           # we need to reset force groups after adding new customNonbondedForce_alchemical force object
           for i in range(self.system.getNumForces()):

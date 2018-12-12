@@ -36,6 +36,15 @@ from TI_classes import *
 #       like an "onion", and remove atoms layer by layer.  Second, we use a special scaling function for the Born-Mayer exponenents, see "define_energy_function_rep" method,
 #       to smooth out repulsive interactions
 #
+#    IMPORTANT NOTE:  We cannot switch between GPU/CPU contexts for numerical derivatives
+#        This is because these involve different kernels, with slightly different numerical output
+#        while these numerical differences may seem small (e.g. 0.5 kJ/mol for total system electrostatics)
+#        they are not small compared to the delta_E from small delta_lambda derivatives, and cause severe artifacts!
+#        for example, using both a GPU/CPU kernel for electrostatic numerical derivatives for methane, we get a value of
+#        50 kJ/mol contribution to the solvation free energy!  this is just an artifact of the 0.5 kJ/mol difference between kernels,
+#        and the use of a 0.01 delta lambda value ... so be careful, and switch from GPU to CPU/CPU kernels for numerical derivatives
+#        (unless we have multiple GPU contexts)
+#
 #*******************************************************************
 
 #***********************************  Fill in these names/files for each simulation *******************
@@ -80,7 +89,7 @@ chksteps =  1000 # steps for saving checkpoint file
 platform = Platform.getPlatformByName('CUDA')
 properties = {'Precision': 'mixed', 'DeviceIndex':'0'}
 # this is platform used for simulation object that computes numerical derivative
-platform_dx = Platform.getPlatformByName('CPU')
+platform_dx = Platform.getPlatformByName('CUDA')
 #**********************************************************************************
 
 #************************************************************************

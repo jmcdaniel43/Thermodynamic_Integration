@@ -83,13 +83,15 @@ chksteps =  1000 # steps for saving checkpoint file
  
 #*********************************** End Input section
 
-
+# platform type, use same for both contexts of numerical derivative, otherwise
+# will give significant artifacts even with small differences!
+platform_type = 'CUDA'  # e.g. 'CPU' or 'CUDA'
 
 #******************* Change this for CUDA/OpenCl/CPU kernels ******************
-platform = Platform.getPlatformByName('CUDA')
+platform = Platform.getPlatformByName(platform_type)
 properties = {'Precision': 'mixed', 'DeviceIndex':'0'}
 # this is platform used for simulation object that computes numerical derivative
-platform_dx = Platform.getPlatformByName('CUDA')
+platform_dx = Platform.getPlatformByName(platform_type)
 #**********************************************************************************
 
 #************************************************************************

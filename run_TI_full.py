@@ -28,13 +28,16 @@ from TI_classes import *
 #       for solute molecule/ion (polarization still on solvent), so that simulation is numerically stable for pol=0.0 on solute
 #       derivative dE_dlambda is computed numerically
 #  
-#    3) scale VDWs:  VDWs interactions on solute are scaled from 1 to 0.0.  Derivative dE_dlambda is computed analytically, using compute global derivative
-#       method for custom nonbonded forces within OpenMM
+#    3) scale SAPT-FF to LJ-like potential:  In order to use existing soft-core functional forms, we first scale SAPT-FF to LJ-like potential.  
+#       Derivative dE_dlambda is computed analytically, using compute global derivative method for custom nonbonded forces within OpenMM
 #
-#    4) scale Repulsion:  This is the trickiest part, as we generally need "soft-core potentials" or something analogous.  Here, we use two special techniques
-#       to avoid numerical divergence near lambda=0.  First, we scale molecule/ion by atom shells, defined by user.  The idea here is to treat the molecule
-#       like an "onion", and remove atoms layer by layer.  Second, we use a special scaling function for the Born-Mayer exponenents, see "define_energy_function_rep" method,
-#       to smooth out repulsive interactions
+#    4) scale soft-core LJ repulsion:  This is the trickiest part, requiring "soft-core potentials".  At this stage we have turned off electrostatics
+#       (and exluded these interactions in nonbonded force), and have scaled the SAPT-FF potential to an LJ-like potential (with an extra C8/R^8 term)
+#       we then scale off this interaction (which includes both repulsion and dispersion) using a soft-core functional form similar to that given in the
+#       Gromacs manual.  Note that it's important to scale repulsion/dispersion simultaneously for equal sampling.
+#       We also have coded in the option of scaling molecule/ion by atom shells, defined by user.  The idea here is to treat the molecule
+#       like an "onion", and remove atoms layer by layer.  However, we don't think this is generally a good idea ...
+#
 #
 #    IMPORTANT NOTE:  We cannot switch between GPU/CPU contexts for numerical derivatives
 #        This is because these involve different kernels, with slightly different numerical output
@@ -47,13 +50,15 @@ from TI_classes import *
 #
 #*******************************************************************
 
+#********** Set this for the functional form of the solute potential.  If SAPT_FF = False, assume standard LJ without polarization
+SAPT_FF_potential = True
+
 #***********************************  Fill in these names/files for each simulation *******************
-solutename='PF6'       # this is the solute molecule for TI
+solutename='BF4'       # this is the solute molecule for TI
 # for repulsion, we scale by atom shells, so this should be a list of lists, each inner list corresponding to atoms within
 # the same atom shell.  For example for NO3, we scale repulsion off oxygen atoms first, then turn off nitrogen
 atomshells=[]
-atomshells.append( [ 'F1' , 'F2' , 'F3' , 'F4' , 'F5' , 'F6' ] )
-atomshells.append( [ 'P' , ] )
+atomshells.append( [ 'B', 'F1' , 'F2' , 'F3' , 'F4' ] )
 
 energyfile_name='energies.log'
 derivativefile_name='dE_dlambda.log'
@@ -71,13 +76,13 @@ temperature=300*kelvin
 pressure = 1.0*atmosphere
 barofreq = 100
 
-lambda_range = [ 1.0 , 0.8 , 0.6 , 0.4 , 0.2 ,  0.0 ]  # lambda values for TI
+lambda_range = [ 1.0 , 0.9, 0.8 , 0.7, 0.6 , 0.5, 0.4 , 0.3, 0.2 , 0.1, 0.0 ]  # lambda values for TI
 
 NPT_simulation=True  # NPT or NVT simulation??  if False, pressure/barofreq will be ignored...
 
-n_equil=1000 # Equilibration after each change of Hamiltonian
-n_deriv=5 # number of derivatives to sample for each lambda value
-n_step=100  # number of MD steps between derivative sampling
+n_equil=10000 # Equilibration after each change of Hamiltonian
+n_deriv=500 # number of derivatives to sample for each lambda value
+n_step=500  # number of MD steps between derivative sampling
 trjsteps = 10000 # steps for saving trajectory...
 chksteps =  1000 # steps for saving checkpoint file
  
@@ -89,7 +94,7 @@ platform_type = 'CUDA'  # e.g. 'CPU' or 'CUDA'
 
 #******************* Change this for CUDA/OpenCl/CPU kernels ******************
 platform = Platform.getPlatformByName(platform_type)
-properties = {'Precision': 'mixed', 'DeviceIndex':'0'}
+properties = {'Precision': 'mixed', 'DeviceIndex':'2'}
 # this is platform used for simulation object that computes numerical derivative
 platform_dx = Platform.getPlatformByName(platform_type)
 #**********************************************************************************
@@ -104,7 +109,10 @@ use_SCF_lambda_pol = True
 print_energies = True
 
 # NOTE: Don't change these string names!! they are hard-coded in as key-words in other parts of the code...
-TI_jobs = [ "polarization" , "electrostatic" , "VDW" , "repulsion" ]
+#       SAPT_FF_LJ scales the SAPT_FF potential to an LJ-like potential, and "repulsion" scales off the full LJ interaction
+#       using a soft-core function.  We use the terminology "repulsion" even though we scale of attractive interactions here as well,
+#       so as not to be confused that the original force field was LJ.
+TI_jobs = [ "polarization" , "electrostatic" , "SAPT_FF_LJ" , "repulsion" ]
 
 # first see if any of these directory exists (they shouldn't! if they do, then exit...)
 for interaction_type in TI_jobs:
@@ -119,7 +127,7 @@ start_positions=pdb.positions
 
 
 #********************************
-#  Loop over 4 stages of lambda scaling:  1st) polarization, 2nd) electrostatic, 3rd) VDW, 4th) repulsion
+#  Loop over 4 stages of lambda scaling:  1st) polarization, 2nd) electrostatic, 3rd) SAPT_FF_LJ, 4th) repulsion
 #  treat these essentially as "separate simulations"
 #********************************
 
@@ -139,7 +147,12 @@ for interaction_type in TI_jobs:
         resxml_local = resxml_nopol
 
     pdb = PDBFile(pdbstart)
-    integrator = DrudeLangevinIntegrator(temperature, 1/picosecond, 1*kelvin, 1/picosecond, 0.001*picoseconds)
+
+    #****** Drude integrator for SAPT-FF
+    if SAPT_FF_potential :
+        integrator = DrudeLangevinIntegrator(temperature, 1/picosecond, 1*kelvin, 1/picosecond, 0.001*picoseconds)
+    else :
+        integrator = LangevinIntegrator(temperature, 1/picosecond, 0.001*picoseconds)
 
     pdb.topology.loadBondDefinitions( ffdir + resxml_local )
     pdb.topology.createStandardBonds();
@@ -160,7 +173,7 @@ for interaction_type in TI_jobs:
     #************************************************
     #   Create TI object for Thermodynamic Integration
     #
-    TI_system = TI(solutename, atomshells, system, modeller, forcefield, integrator, platform, properties, use_SCF_lambda_pol, interaction_type, NPT_simulation )
+    TI_system = TI(solutename, atomshells, system, modeller, forcefield, integrator, platform, properties, use_SCF_lambda_pol, interaction_type, SAPT_FF_potential, NPT_simulation )
     #************************************************
 
     energyfile = strdir + energyfile_name
@@ -183,12 +196,6 @@ for interaction_type in TI_jobs:
         # if this interaction type is polarization and we're using SCF, need another simulation context...
         if interaction_type == "polarization" and use_SCF_lambda_pol == True:
              TI_system.lambda_SCF = TI_system.numerical_lambda_derivative( TI_system, platform_dx )
-
-
-    elif interaction_type == "repulsion":
-        #************************ last step in TI.  electrostatics, polarization should be turned off in force field file, here we turn off VDWs before the simulation
-        for i in range(len(atomshells)):
-            TI_system.simmd.context.setParameter(TI_system.lambda_attrac_string[i],0.0)
 
 
     # write initial positions
@@ -246,14 +253,12 @@ for interaction_type in TI_jobs:
             flag = simulation_scale_electrostatic( TI_system, lambda_i )
             # scale electrostatics in numerical derivative
             TI_system.lambda_derivative.create_numerical_derivative( scalefactor=lambda_i )
-  
-        elif interaction_type == "VDW" :
+ 
+        else : 
+            # here we're either scaling SAPT_FF to LJ, or scaling off LJ with soft-core.  Either way, analytic derivatives...
             # set Global parameter
-            TI_system.simmd.context.setParameter(TI_system.lambda_attrac_string[force_index],lambda_i)
+            TI_system.simmd.context.setParameter(TI_system.lambda_string[force_index],lambda_i)
 
-        elif interaction_type == "repulsion" : 
-            # set Global parameter
-            TI_system.simmd.context.setParameter(TI_system.lambda_rep_string[force_index],lambda_i)
 
         logger_derivative.info('%(str1)s %(lambda)r', { 'str1' : 'derivatives at lambda = ', 'lambda' : lambda_i })
         logger_derivative.info('%(str1)s %(nstep)d %(str2)s' , { 'str1' : 'Equilibrating for  ', 'nstep' : n_equil , 'str2' : ' steps'})
@@ -264,7 +269,7 @@ for interaction_type in TI_jobs:
         # equilibrate
         TI_system.simmd.step(n_equil)
 
-        #*********************** Sample derivatives for repulsion energy ****************************
+        #*********************** Sample derivatives for energy ****************************
         for i in range(n_deriv):
             TI_system.simmd.step(n_step)
 
@@ -297,14 +302,11 @@ for interaction_type in TI_jobs:
             elif interaction_type == "electrostatic" :
                 dH_dlambda = TI_system.lambda_derivative.compute_numerical_derivative( TI_system.simmd, print_energies, logger_energy )
 
-            else :  # VDW and repulsion
+            else :  # SAPT_FF_LJ and repulsion
                 # get analytic derivative
                 state = TI_system.simmd.context.getState(getEnergy=True,getForces=True,getPositions=True,getParameterDerivatives=True)
                 dp = state.getEnergyParameterDerivatives()
-                if interaction_type == "VDW" :
-                    dH_dlambda = dp[TI_system.lambda_attrac_string[force_index]]
-                elif interaction_type == "repulsion" :
-                    dH_dlambda = dp[TI_system.lambda_rep_string[force_index]]
+                dH_dlambda = dp[TI_system.lambda_string[force_index]]
 
             # now store derivative
             logger_derivative.info('%(str1)s  %(i)d %(dH)r', { 'str1': 'step', 'i' : i , 'dH' : dH_dlambda })

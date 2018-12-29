@@ -18,21 +18,38 @@ from sapt_exclusions import *
 
 #************************************************************************************************
 # this is definition of energy function for aa and na interactions modeled by CustomNonbondedForce
-# short-range and VDWs interactions can be scaled with global parameters 'lambda_rep', 'lambda_attrac'
-# currently hard-coded in as SAPT-FF functional form
+#
+# Soft-core potentials must be used to turn off these interactions.  Because well-tested soft-core potentials
+# only exist for LJ-like functional forms, we first scale the SAPT-FF functional form to a LJ-like functional form,
+# which is an LJ potential plus attractive C8/R^8.  The repulsive C12 parameter is chosen, so that
+# the C12/R^12 term and original Born-Mayer repulsive term give 1 kJ/mol repulsion at the same distance.
+# While this is an arbitrary (but reasonable) choice, we've found it works well in our tests.
+#
+# after the potential is switched to LJ-like, the LJ potential is turned off with a soft-core potential
+# similar to that suggested in the Gromacs Manual.  Currently we use a value of 0.7 for alpha, but
+# found that results are insensitive to this choice for 0.5 < alpha < 1.5, as they should be.
 #************************************************************************************************
 
-# this is full repulsive and attractive energy function
-def define_energy_function_full( lambda_rep_string , lambda_attrac_string ):
-    # lambda_rep scales repulsive part, lambda_attrac scales attractive part
-    string='{}*A*exBr - {}*(f6*C6/(r^6) + f8*C8/(r^8) + f10*C10/(r^10) + f12*C12/(r^12));     A=Aex-Ael-Ain-Adh;     Aex=sqrt(Aexch1*Aexch2); Ael=sqrt(Aelec1*Aelec2); Ain=sqrt(Aind1*Aind2); Adh=sqrt(Adhf1*Adhf2);     f12 = f10 - exBr*( (1/39916800)*(Br^11)*(1 + Br/12) );     f10 = f8 - exBr*( (1/362880)*(Br^9)*(1 + Br/10 ) );     f8 = f6 - exBr*( (1/5040)*(Br^7)*(1 + Br/8 ) );     f6 = 1 - exBr*(1 + Br * (1 + (1/2)*Br*(1 + (1/3)*Br*(1 + (1/4)*Br*(1 + (1/5)*Br*(1 + (1/6)*Br ) ) )  ) ) );     exBr = exp(-Br);     Br = B*r;     B=(Bexp1+Bexp2)*Bexp1*Bexp2/(Bexp1^2 + Bexp2^2);     C6=sqrt(C61*C62); C8=sqrt(C81*C82); C10=sqrt(C101*C102); C12=sqrt(C121*C122)'.format(lambda_rep_string, lambda_attrac_string)
+# this is energy function to switch between SAPT-FF and LJ-like potentials, before turning on soft-core ...
+def define_energy_function_LJ_switch( lambda_string ):
+    # switch potentials using (1-lambda)*V_f + lambda*V_i , where V_f and V_i are the final and initial potential functions
+    # V_i is SAPT-FF functional form, and V_f is "LJ-like", with extra C8/R^8 repulsion
+    string='(1.0 - {0})*( Crep/r^12 - C6/r^6 - C8/r^8 ) + {0}*(A*exBr - (f6*C6/(r^6) + f8*C8/(r^8) + f10*C10/(r^10) + f12*C12/(r^12)) ); Crep=( -1.0/B * log(1.0/max(A,1.0)) )^12 ;  A=Aex-Ael-Ain-Adh;     Aex=sqrt(Aexch1*Aexch2); Ael=sqrt(Aelec1*Aelec2); Ain=sqrt(Aind1*Aind2); Adh=sqrt(Adhf1*Adhf2);     f12 = f10 - exBr*( (1/39916800)*(Br^11)*(1 + Br/12) );     f10 = f8 - exBr*( (1/362880)*(Br^9)*(1 + Br/10 ) );     f8 = f6 - exBr*( (1/5040)*(Br^7)*(1 + Br/8 ) );     f6 = 1 - exBr*(1 + Br * (1 + (1/2)*Br*(1 + (1/3)*Br*(1 + (1/4)*Br*(1 + (1/5)*Br*(1 + (1/6)*Br ) ) )  ) ) );     exBr = exp(-Br);     Br = B*r;     B=(Bexp1+Bexp2)*Bexp1*Bexp2/(Bexp1^2 + Bexp2^2);     C6=sqrt(C61*C62); C8=sqrt(C81*C82); C10=sqrt(C101*C102); C12=sqrt(C121*C122)'.format(lambda_string)
     return string
 
-# this is special energy function for scaling repulsive interations.  VDWs has been turned off, and we scale the exponent to smooth out the repulsion
-def define_energy_function_rep( lambda_rep_string , lambda_attrac_string ):
-    # lambda_rep scales repulsive part, lambda_attrac scales attractive part
-    string='{0}*A*exBr - {1}; A=Aex-Ael-Ain-Adh;   Aex=sqrt(Aexch1*Aexch2); Ael=sqrt(Aelec1*Aelec2); Ain=sqrt(Aind1*Aind2); Adh=sqrt(Adhf1*Adhf2);   exBr = exp(-Br);  Br = B*(r+0.2*(1-{0})) ;  B=(Bexp1+Bexp2)*Bexp1*Bexp2/(Bexp1^2 + Bexp2^2);'.format(lambda_rep_string, lambda_attrac_string)
+
+# this is soft-core "LJ-like" potential with extra C8/R^8 interaction, that we use
+# when scaling SAPT-FF force fields.  C12 repulsive parameter is chosen analogously to the define_energy_function_LJ_switch above
+def define_energy_function_LJ_C8_scale( lambda_string ):
+    string='{0}*(Crep/rb^12  - C6/rb^6 - C8/rb^8 ); rb=(0.7*rswitch^6*(1.0-{0})+r^6)^(1.0/6.0) ; rswitch=max(rs, 0.1) ; Crep=rs^12 ; rs= -1.0/B * log(1.0/max(A,1.0)) ; A=Aex-Ael-Ain-Adh;   Aex=sqrt(Aexch1*Aexch2); Ael=sqrt(Aelec1*Aelec2); Ain=sqrt(Aind1*Aind2); Adh=sqrt(Adhf1*Adhf2); B=(Bexp1+Bexp2)*Bexp1*Bexp2/(Bexp1^2 + Bexp2^2); C6=sqrt(C61*C62); C8=sqrt(C81*C82);'.format(lambda_string)
     return string
+
+# this is soft-core LJ potential for regular LJ force fields
+def define_energy_function_LJ_scale( lambda_string ):
+    string='{0}*( A/rb^12 - C/rb^6 ) ; rb=(0.7*0.4^6*(1.0-{0})^2+r^6)^(1.0/6.0) ;  A=sqrt(A1*A2) ;  C=sqrt(C1*C2) ; A1=4*eps1*sig1^12 ; A2=4*eps2*sig2^12 ; C1=4*eps1*sig1^6 ; C2=4*eps2*sig2^6 '.format(lambda_string)
+    return string
+
+
 
 
 #**********************************************************************************************
@@ -104,8 +121,9 @@ def construct_OpenMM_simulation_object( simobject, modeller, platform, propertie
     # store force class objects
     simobject.nbondedForce = [f for f in [simobject.system.getForce(i) for i in range(simobject.system.getNumForces())] if type(f) == NonbondedForce][0]
     simobject.customNonbondedForce = [f for f in [simobject.system.getForce(i) for i in range(simobject.system.getNumForces())] if type(f) == CustomNonbondedForce][0]
-    simobject.custombond = [f for f in [simobject.system.getForce(i) for i in range(simobject.system.getNumForces())] if type(f) == CustomBondForce][0]
-    simobject.drudeForce = [f for f in [simobject.system.getForce(i) for i in range(simobject.system.getNumForces())] if type(f) == DrudeForce][0]
+    if simobject.SAPT_FF_potential :
+         simobject.custombond = [f for f in [simobject.system.getForce(i) for i in range(simobject.system.getNumForces())] if type(f) == CustomBondForce][0]
+         simobject.drudeForce = [f for f in [simobject.system.getForce(i) for i in range(simobject.system.getNumForces())] if type(f) == DrudeForce][0]
 
     # PME for electrostatics, Cutoff for custom. Probably fine to hard-code these in,
     # as I don't envision ever using anything else...
@@ -120,7 +138,8 @@ def construct_OpenMM_simulation_object( simobject, modeller, platform, propertie
 
     #************************************************
     #         IMPORTANT: generate exclusions for SAPT-FF
-    sapt_exclusions = sapt_generate_exclusions(simobject.simmd, simobject.system, modeller.positions)
+    if simobject.SAPT_FF_potential :
+        sapt_exclusions = sapt_generate_exclusions(simobject.simmd, simobject.system, modeller.positions)
     #************************************************
  
     # set force groups
@@ -208,7 +227,7 @@ def simulation_scale_electrostatic( simulation_object, scalefactor ):
 # we assume that a 'solute' molecules is the alchemical species, so we use these names interchangably
 #******************************************************
 class TI(object):
-    def __init__(self, solutename, atomshells, system, modeller, forcefield, integrator, platform, properties, use_SCF_lambda_pol, interaction_type, NPT_simulation):
+    def __init__(self, solutename, atomshells, system, modeller, forcefield, integrator, platform, properties, use_SCF_lambda_pol, interaction_type, SAPT_FF_potential, NPT_simulation):
           self.solutename = solutename
           self.atomshells = atomshells
           self.system = system
@@ -220,6 +239,7 @@ class TI(object):
           self.use_SCF_lambda_pol =  use_SCF_lambda_pol
           self.interaction_type = interaction_type
           self.NPT_simulation = NPT_simulation
+          self.SAPT_FF_potential = SAPT_FF_potential
 
 
           #******   create simulation object
@@ -231,7 +251,7 @@ class TI(object):
           # get Cutoff: Be consistent for all defined force classes...
           self.Cutoff = self.customNonbondedForce.getCutoffDistance()
 
-          # setup Custom energy functions.  If scaling VDWs, we only need one of these.  If scaling repulsion, we need one for
+          # setup Custom energy functions.  If scaling anything but LJ, we only need one of these.  If scaling soft-core LJ, we need one for
           # each shell of atoms
           self.setup_energy_functions_alchemical( self.atomshells , self.interaction_type )
 
@@ -272,7 +292,7 @@ class TI(object):
               # this shell will interact with all non-solute atoms
               for force_index in range(len(self.atomshells)):
                   self.create_customNonbondedForce_alchemical( force_index , self.solute_atomshells_list[force_index] )
-          else:
+          elif interaction_type == "SAPT_FF_LJ":
               force_index=0
               # only one new CustomNonbondedforce class
               self.create_customNonbondedForce_alchemical( force_index , self.solute_total_atoms_list ) 
@@ -288,12 +308,12 @@ class TI(object):
               # these are Aexch, Aelec, Aind, Adhf, B, C6 , C8 , C10 , C12
               #self.customNonbondedForce.setParticleParameters(index, [ 0.0 , 0.0 , 0.0 , 0.0 , 10.0 , 0.0 , 0.0 , 0.0 , 0.0 ] )
 
+          if interaction_type == "repulsion" or interaction_type == "SAPT_FF_LJ" :
           # don't zero parameters as in commented above code, because we want to keep intra-molecular alchemical interactions within this force class ...
-          for i_index in self.alchemical_atomset:
-              for j_index in self.nonalchemical_atomset:
-                  self.customNonbondedForce.addExclusion(i_index,j_index)
-                  if interaction_type == "repulsion":
-                      # need to add exceptions for electrostatics, even though charges are zero, have numerical problems in electrostatics when repulsion is scaled down
+              for i_index in self.alchemical_atomset:
+                  for j_index in self.nonalchemical_atomset:
+                      self.customNonbondedForce.addExclusion(i_index,j_index)
+                      # exclude electrostatics, charges haven't been turned off since we make new simulation object for scaling each interaction type
                       self.nbondedForce.addException(i_index,j_index,0,1,0,True)
 
           # we need to reset force groups after adding new customNonbondedForce_alchemical force object
@@ -319,18 +339,26 @@ class TI(object):
           # set up new CustomNonbondedforce with scaling factors for alchemical/alchemical and non-alchemical/alchemical interactions.
           self.customNonbondedForce_alchemical.append(openmm.CustomNonbondedForce( self.energy_function_alchemical[force_index] ))
           # add particle parameters
-          self.customNonbondedForce_alchemical[force_index].addPerParticleParameter("Aexch")
-          self.customNonbondedForce_alchemical[force_index].addPerParticleParameter("Aelec")
-          self.customNonbondedForce_alchemical[force_index].addPerParticleParameter("Aind")
-          self.customNonbondedForce_alchemical[force_index].addPerParticleParameter("Adhf")
-          self.customNonbondedForce_alchemical[force_index].addPerParticleParameter("Bexp")
-
-          # add VDWs parameters if not repulsion
-          if self.interaction_type != "repulsion":
+          #****** SAPT-FF potential *********
+          if self.SAPT_FF_potential:
+              self.customNonbondedForce_alchemical[force_index].addPerParticleParameter("Aexch")
+              self.customNonbondedForce_alchemical[force_index].addPerParticleParameter("Aelec")
+              self.customNonbondedForce_alchemical[force_index].addPerParticleParameter("Aind")
+              self.customNonbondedForce_alchemical[force_index].addPerParticleParameter("Adhf")
+              self.customNonbondedForce_alchemical[force_index].addPerParticleParameter("Bexp")
               self.customNonbondedForce_alchemical[force_index].addPerParticleParameter("C6")
               self.customNonbondedForce_alchemical[force_index].addPerParticleParameter("C8")
-              self.customNonbondedForce_alchemical[force_index].addPerParticleParameter("C10")
-              self.customNonbondedForce_alchemical[force_index].addPerParticleParameter("C12")
+
+              # add VDWs parameters if scaling SAPT-FF to LJ
+              if self.interaction_type != "repulsion":
+                  self.customNonbondedForce_alchemical[force_index].addPerParticleParameter("C10")
+                  self.customNonbondedForce_alchemical[force_index].addPerParticleParameter("C12")
+
+          #***** LJ potential ************
+          else:
+              self.customNonbondedForce_alchemical[force_index].addPerParticleParameter("sig")
+              self.customNonbondedForce_alchemical[force_index].addPerParticleParameter("eps")
+              
 
           # set methods
           self.customNonbondedForce_alchemical[force_index].setNonbondedMethod(NonbondedForce.CutoffPeriodic)
@@ -343,23 +371,30 @@ class TI(object):
 
           # Distribute Particles to this new CustomNonbondedforce
           for index in range(self.customNonbondedForce.getNumParticles()):
-              [ Aexch , Aelec , Aind , Adhf , Bexp , C6 , C8 , C10 , C12 ] =  self.customNonbondedForce.getParticleParameters(index)
-              # if repulsion, only add Born-Mayer parameters...
-              if self.interaction_type == "repulsion":
-                  self.customNonbondedForce_alchemical[force_index].addParticle([ Aexch , Aelec , Aind , Adhf , Bexp ])
-              else :
-                  self.customNonbondedForce_alchemical[force_index].addParticle([ Aexch , Aelec , Aind , Adhf , Bexp , C6 , C8 , C10 , C12 ])
+
+              #****** SAPT-FF potential *********
+              if self.SAPT_FF_potential:
+                  [ Aexch , Aelec , Aind , Adhf , Bexp , C6 , C8 , C10 , C12 ] =  self.customNonbondedForce.getParticleParameters(index)
+                  # if repulsion, only add Born-Mayer parameters...
+                  if self.interaction_type == "repulsion":
+                      self.customNonbondedForce_alchemical[force_index].addParticle([ Aexch , Aelec , Aind , Adhf , Bexp , C6 , C8 ])
+                  else :
+                      self.customNonbondedForce_alchemical[force_index].addParticle([ Aexch , Aelec , Aind , Adhf , Bexp , C6 , C8 , C10 , C12 ])
+
+              #***** LJ potential ************
+              else:
+                  [ sig, eps ] =  self.customNonbondedForce.getParticleParameters(index)
+                  self.customNonbondedForce_alchemical[force_index].addParticle([ sig , eps ])
+
 
           # add interaction between specified solute atoms and rest of system
           self.alchemical_local = set( solute_atom_list )
           self.customNonbondedForce_alchemical[force_index].addInteractionGroup( self.alchemical_local , self.nonalchemical_atomset )
 
           # add scale factors for force class as Global parameters
-          self.customNonbondedForce_alchemical[force_index].addGlobalParameter( self.lambda_rep_string[force_index], self.lambda_rep[force_index] )
-          self.customNonbondedForce_alchemical[force_index].addGlobalParameter( self.lambda_attrac_string[force_index], self.lambda_attrac[force_index] )
+          self.customNonbondedForce_alchemical[force_index].addGlobalParameter( self.lambda_string[force_index], self.lambda_value[force_index] )
           # add energy derivatives for these scale factors
-          self.customNonbondedForce_alchemical[force_index].addEnergyParameterDerivative(self.lambda_rep_string[force_index])
-          self.customNonbondedForce_alchemical[force_index].addEnergyParameterDerivative(self.lambda_attrac_string[force_index])
+          self.customNonbondedForce_alchemical[force_index].addEnergyParameterDerivative(self.lambda_string[force_index])
 
         
 
@@ -375,24 +410,28 @@ class TI(object):
            numberterms = 1
 
         # initialize lists
-        self.lambda_rep_string=[]
-        self.lambda_attrac_string=[]
+        self.lambda_string=[]
         self.energy_function_alchemical=[]
-        self.lambda_rep=[]
-        self.lambda_attrac=[]
+        self.lambda_value=[]
         for i in range(numberterms):
-            string1 = 'lambda_rep' + str(i)
-            string2 = 'lambda_attrac' + str(i)
-            self.lambda_rep_string.append( string1 )
-            self.lambda_attrac_string.append( string2 )
-            # energy function depends on whether we're scaling repulsive interactions
-            if interaction_type == "repulsion" :          
-                self.energy_function_alchemical.append( define_energy_function_rep( self.lambda_rep_string[i] , self.lambda_attrac_string[i] ) )
-            else:
-                self.energy_function_alchemical.append( define_energy_function_full( self.lambda_rep_string[i] , self.lambda_attrac_string[i] ) )
+            string1 = 'lambda' + str(i)
+            self.lambda_string.append( string1 )
 
-            self.lambda_rep.append( 1.0 )
-            self.lambda_attrac.append( 1.0 )
+            # energy function depends on whether SAPT-FF or LJ force field
+            if self.SAPT_FF_potential :
+                #******** SAPT-FF potential, either scaling SAPT-FF to LJ, or turning off softcore LJ
+                if interaction_type == "repulsion" :          
+                    # here we're scaling down softcore LJ, we've already scaled SAPT-FF to LJ
+                    self.energy_function_alchemical.append( define_energy_function_LJ_C8_scale( self.lambda_string[i] ) )
+                else:
+                    # here we're scaling SAPT-FF to LJ
+                    self.energy_function_alchemical.append( define_energy_function_LJ_switch( self.lambda_string[i]  ) )
+            else :
+                #******** standard LJ potential, scale soft-core interaction
+                    self.energy_function_alchemical.append( define_energy_function_LJ_scale( self.lambda_string[i]  ) )
+
+
+            self.lambda_value.append( 1.0 )
 
 
 
@@ -425,16 +464,17 @@ class TI(object):
                           # see if this atom has drude oscillator attached
                           # note that self.drudeForce.getParticleParameters(i) returns list that looks like
                           # [27, 2, -1, -1, -1, Quantity(value=-1.1478, unit=elementary charge), Quantity(value=0.00195233, unit=nanometer**3), 0.0, 0.0]                          
-                          for i in range(self.drudeForce.getNumParticles()):
-                              if self.drudeForce.getParticleParameters(i)[1] == index:
-                                  drude_flag=1
-                                  dindex_d = i
-                                  dindex_g = self.drudeForce.getParticleParameters(i)[0]
-                                  # get charge of Drude
-                                  (q_d, sig, eps) = self.nbondedForce.getParticleParameters(dindex_g)  
-                                  # get polarizability
-                                  pol = self.drudeForce.getParticleParameters(i)[6]._value
-                                  break
+                          if self.SAPT_FF_potential :
+                              for i in range(self.drudeForce.getNumParticles()):
+                                  if self.drudeForce.getParticleParameters(i)[1] == index:
+                                      drude_flag=1
+                                      dindex_d = i
+                                      dindex_g = self.drudeForce.getParticleParameters(i)[0]
+                                      # get charge of Drude
+                                      (q_d, sig, eps) = self.nbondedForce.getParticleParameters(dindex_g)  
+                                      # get polarizability
+                                      pol = self.drudeForce.getParticleParameters(i)[6]._value
+                                      break
                           #*****************
                           #  create 'atom_drude_pair' data structure for atom with or without drude oscillator
                           #*****************
@@ -503,6 +543,8 @@ class TI(object):
              self.interaction_type = outerclass.interaction_type
              # copy NPT_simulation info
              self.NPT_simulation = outerclass.NPT_simulation
+             # copy force field typ info
+             self.SAPT_FF_potential = outerclass.SAPT_FF_potential
 
              #*****************************************
              #   controls size of differential for computing numerical derivatives
